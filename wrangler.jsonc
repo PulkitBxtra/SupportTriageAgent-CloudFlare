@@ -28,13 +28,14 @@
     {
       "binding": "DB",
       "database_name": "support-triage-agent-db",
-      "database_id": "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+      "database_id": "7dc2f60f-495b-45a3-b576-6b010259bc19"
     }
   ],
   "vectorize": [
     {
       "binding": "KB_INDEX",
-      "index_name": "support-triage-kb"
+      "index_name": "support-triage-kb",
+      "remote": true
     }
   ],
   "vars": {

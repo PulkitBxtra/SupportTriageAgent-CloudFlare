@@ -156,3 +156,13 @@ Then re-run step 7 against the deployed URL (`https://<your-worker>.<your-subdom
   (`AIChatAgent` + `@cloudflare/ai-chat`), stripped of its MCP panel and
   image-attachment UI and extended with the triage tools, voice input, and
   the edit-before-approving flow.
+- **Workers AI free tier: 10,000 neurons/day.** A full triage turn is four
+  Llama 3.3 70B calls plus an embedding, so the free allocation covers on
+  the order of tens of conversations per day. When it runs out, the agent
+  surfaces the `4006` quota error in the UI rather than failing silently;
+  the quota resets daily, or the Workers Paid plan removes it.
+- Two known behaviours of Llama 3.3 that the code works around rather than
+  trusts: it can echo the wrong `ticketId` back into `proposeReply` (so the
+  ticket is resolved server-side from the customer's own tickets), and its
+  free-text closing acknowledgment after an approval was unreliable (so it
+  is deterministic). See `PROMPTS.md` entries 11–16 for the full history.

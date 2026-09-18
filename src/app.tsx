@@ -34,8 +34,15 @@ import {
   PencilSimpleIcon,
   UserSwitchIcon,
   ClipboardTextIcon,
-  XIcon
+  XIcon,
+  TagIcon,
+  ClockCounterClockwiseIcon,
+  MagnifyingGlassIcon,
+  CircuitryIcon,
+  DatabaseIcon,
+  type IconProps
 } from "@phosphor-icons/react";
+import type { ComponentType } from "react";
 
 const CUSTOMER_ID_KEY = "loopwave-customer-id";
 
@@ -57,6 +64,232 @@ function getStoredCustomerId(): string {
     // ignore
   }
   return fresh;
+}
+
+// ── Pipeline / architecture legibility ──────────────────────────────────
+//
+// The tool-calling loop below IS the "workflow/coordination" piece of the
+// assignment, but a bare tool name + JSON blob doesn't read as that to
+// someone skimming a demo. TOOL_META gives every tool a plain-language
+// label and names which Cloudflare primitive is doing the work; the
+// pipeline stepper turns the 4-tool sequence into a visible progress
+// indicator instead of a scroll of collapsed technical cards.
+
+type StepStatus =
+  | "pending"
+  | "active"
+  | "done"
+  | "awaiting"
+  | "rejected"
+  | "error";
+
+const TOOL_META: Record<
+  string,
+  {
+    // Debug (evaluator) framing — names the tool and the Cloudflare primitive.
+    label: string;
+    detail: string;
+    // Normal-user framing — plain narration, no internals.
+    activeText: string;
+    doneText: string;
+    icon: ComponentType<IconProps>;
+  }
+> = {
+  classifyTicket: {
+    label: "Classify ticket",
+    detail:
+      "Llama 3.3 (structured output) picks a category + priority and opens a ticket in D1.",
+    activeText: "Looking into your issue…",
+    doneText: "Got the details on your issue",
+    icon: TagIcon
+  },
+  getCustomerHistory: {
+    label: "Check ticket history",
+    detail:
+      "D1 lookup for this customer's past tickets — cross-session memory.",
+    activeText: "Checking your ticket history…",
+    doneText: "Checked your ticket history",
+    icon: ClockCounterClockwiseIcon
+  },
+  searchKnowledgeBase: {
+    label: "Search knowledge base",
+    detail:
+      "Embeds the query and runs a Vectorize similarity search over the help docs (RAG).",
+    activeText: "Searching our help docs…",
+    doneText: "Found relevant help docs",
+    icon: MagnifyingGlassIcon
+  },
+  proposeReply: {
+    label: "Draft reply",
+    detail:
+      "Llama 3.3 drafts a reply grounded in the search results, then holds it for your approval.",
+    activeText: "Drafting a reply…",
+    doneText: "Reply approved and sent",
+    icon: PencilSimpleIcon
+  }
+};
+
+const PIPELINE_STEPS = [
+  "classifyTicket",
+  "getCustomerHistory",
+  "searchKnowledgeBase",
+  "proposeReply"
+] as const;
+
+function getPipelineStepStatuses(
+  messages: UIMessage[]
+): Record<string, StepStatus> {
+  const statuses: Record<string, StepStatus> = {};
+  for (const key of PIPELINE_STEPS) statuses[key] = "pending";
+
+  const lastUserIndex = messages.reduce(
+    (acc, m, i) => (m.role === "user" ? i : acc),
+    -1
+  );
+  if (lastUserIndex === -1) return statuses;
+
+  for (let i = lastUserIndex; i < messages.length; i++) {
+    for (const part of messages[i].parts) {
+      if (!isToolUIPart(part)) continue;
+      const toolName = getToolName(part);
+      if (!(toolName in statuses)) continue;
+
+      if (
+        part.state === "input-streaming" ||
+        part.state === "input-available"
+      ) {
+        statuses[toolName] = "active";
+      } else if (part.state === "output-available") {
+        statuses[toolName] = "done";
+      } else if ("approval" in part && part.state === "approval-requested") {
+        statuses[toolName] = "awaiting";
+      } else if (
+        part.state === "output-denied" ||
+        ("approval" in part &&
+          (part.approval as { approved?: boolean })?.approved === false)
+      ) {
+        statuses[toolName] = "rejected";
+      } else if (part.state === "output-error") {
+        statuses[toolName] = "error";
+      }
+    }
+  }
+  return statuses;
+}
+
+const STEP_COLOR: Record<StepStatus, string> = {
+  pending: "bg-kumo-line",
+  active: "bg-kumo-brand animate-pulse",
+  done: "bg-kumo-success",
+  awaiting: "bg-kumo-warning",
+  rejected: "bg-kumo-line",
+  error: "bg-kumo-danger"
+};
+
+const STEP_TEXT: Record<StepStatus, string> = {
+  pending: "text-kumo-inactive",
+  active: "text-kumo-brand",
+  done: "text-kumo-success",
+  awaiting: "text-kumo-warning",
+  rejected: "text-kumo-inactive",
+  error: "text-kumo-danger"
+};
+
+function PipelineStepper({ messages }: { messages: UIMessage[] }) {
+  const statuses = getPipelineStepStatuses(messages);
+
+  return (
+    <div className="border-b border-kumo-line bg-kumo-base">
+      <div className="max-w-3xl mx-auto px-5 py-2.5">
+        <div className="flex w-full gap-1.5">
+          {PIPELINE_STEPS.map((key) => (
+            <div
+              key={key}
+              className={`h-1 flex-1 rounded-full transition-colors duration-300 ${STEP_COLOR[statuses[key]]}`}
+            />
+          ))}
+        </div>
+        <div className="flex w-full mt-1.5">
+          {PIPELINE_STEPS.map((key) => {
+            const meta = TOOL_META[key];
+            const status = statuses[key];
+            const Icon = meta.icon;
+            return (
+              <div
+                key={key}
+                title={meta.detail}
+                className="flex-1 flex items-center justify-center gap-1 min-w-0"
+              >
+                <Icon
+                  size={12}
+                  weight={status === "done" ? "fill" : "regular"}
+                  className={`shrink-0 ${STEP_TEXT[status]}`}
+                />
+                <span
+                  className={`text-xs truncate ${status === "pending" || status === "rejected" ? "text-kumo-inactive" : STEP_TEXT[status]}`}
+                >
+                  {meta.label.split(" ")[0]}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+interface RequirementChip {
+  icon: ComponentType<IconProps>;
+  label: string;
+  detail: string;
+}
+
+const REQUIREMENT_CHIPS: RequirementChip[] = [
+  {
+    icon: BrainIcon,
+    label: "Llama 3.3",
+    detail:
+      "Workers AI — structured classification calls and reply drafting, both via Llama 3.3 70B."
+  },
+  {
+    icon: CircuitryIcon,
+    label: "Durable Object agent",
+    detail:
+      "This conversation is one TriageAgent Durable Object instance running a tool-calling coordination loop, with self-scheduled escalation checks."
+  },
+  {
+    icon: MicrophoneIcon,
+    label: "Chat + voice",
+    detail:
+      "Type or hold the mic — voice is transcribed via Whisper on Workers AI before it reaches the agent."
+  },
+  {
+    icon: DatabaseIcon,
+    label: "D1 + Vectorize",
+    detail:
+      "D1 holds ticket records (cross-session memory); Vectorize holds the embedded knowledge base (RAG)."
+  }
+];
+
+function RequirementsStrip() {
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {REQUIREMENT_CHIPS.map((chip) => {
+        const Icon = chip.icon;
+        return (
+          <div
+            key={chip.label}
+            title={chip.detail}
+            className="flex items-center gap-1 px-2 py-1 rounded-full border border-kumo-line text-xs text-kumo-subtle"
+          >
+            <Icon size={12} className="text-kumo-inactive" />
+            {chip.label}
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 // ── Small components ──────────────────────────────────────────────────
@@ -132,7 +365,7 @@ function AdminPanel({ onClose }: { onClose: () => void }) {
       <Surface className="w-full max-w-4xl mt-10 rounded-xl ring ring-kumo-line shadow-lg p-5">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">
-            <ClipboardTextIcon size={18} className="text-kumo-accent" />
+            <ClipboardTextIcon size={18} className="text-kumo-brand" />
             <Text size="sm" bold>
               All tickets (across every customer)
             </Text>
@@ -247,12 +480,12 @@ function ProposeReplyApprovalCard({
     errorText?: string;
   }) => void;
   finalizeReplyWithEdit: (
-    ticketId: string,
+    ticketId: string | undefined,
     editedReply: string
   ) => Promise<unknown>;
 }) {
   const raw = part as unknown as {
-    input: { ticketId: string; replyText: string };
+    input: { ticketId?: string; replyText: string };
     approval?: { id?: string };
     toolCallId: string;
   };
@@ -300,7 +533,11 @@ function ProposeReplyApprovalCard({
           <Text size="sm" bold>
             Draft reply awaiting approval
           </Text>
-          <Badge variant="secondary">ticket {input.ticketId.slice(0, 8)}</Badge>
+          {input.ticketId && (
+            <Badge variant="secondary">
+              ticket {input.ticketId.slice(0, 8)}
+            </Badge>
+          )}
         </div>
 
         {editing ? (
@@ -308,7 +545,7 @@ function ProposeReplyApprovalCard({
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             rows={4}
-            className="w-full mb-3 px-3 py-2 text-sm rounded-lg border border-kumo-line bg-kumo-base text-kumo-default focus:outline-none focus:ring-1 focus:ring-kumo-accent resize-y"
+            className="w-full mb-3 px-3 py-2 text-sm rounded-lg border border-kumo-line bg-kumo-base text-kumo-default focus:outline-none focus:ring-1 focus:ring-kumo-brand resize-y"
           />
         ) : (
           <div className="mb-3 px-3 py-2 rounded-lg bg-kumo-control text-sm whitespace-pre-wrap">
@@ -376,11 +613,13 @@ function ProposeReplyApprovalCard({
 
 function ToolPartView({
   part,
+  debug,
   addToolApprovalResponse,
   addToolOutput,
   finalizeReplyWithEdit
 }: {
   part: UIMessage["parts"][number];
+  debug: boolean;
   addToolApprovalResponse: (response: {
     id: string;
     approved: boolean;
@@ -392,13 +631,16 @@ function ToolPartView({
     errorText?: string;
   }) => void;
   finalizeReplyWithEdit: (
-    ticketId: string,
+    ticketId: string | undefined,
     editedReply: string
   ) => Promise<unknown>;
 }) {
   if (!isToolUIPart(part)) return null;
   const toolName = getToolName(part);
+  const meta = TOOL_META[toolName];
 
+  // The approval card is core product UX (the human-in-the-loop gate),
+  // not evaluator detail — always shown in full, regardless of debug mode.
   if (
     toolName === "proposeReply" &&
     "approval" in part &&
@@ -414,21 +656,104 @@ function ToolPartView({
     );
   }
 
+  // An approved (or edited) reply: this is the moment it's actually "sent",
+  // so the reply text becomes the assistant's real message to the customer.
+  // Without this the approved text only existed inside the tool output —
+  // the reviewer approved reply X and the customer saw nothing but a
+  // status line.
+  if (toolName === "proposeReply" && part.state === "output-available") {
+    const output = part.output as
+      | { finalReply?: string; edited?: boolean }
+      | undefined;
+    const input = part.input as { replyText?: string } | undefined;
+    const finalReply = output?.finalReply ?? input?.replyText ?? "";
+    const Icon = meta?.icon ?? GearIcon;
+    return (
+      <div className="space-y-1.5">
+        <div className="flex items-center gap-1.5 text-kumo-subtle px-1">
+          <Icon size={12} className="text-kumo-success" weight="fill" />
+          <span className="text-xs">
+            {output?.edited
+              ? "Reply edited and sent"
+              : "Reply approved and sent"}
+          </span>
+        </div>
+        <div className="flex justify-start">
+          <div className="max-w-[85%] rounded-2xl rounded-bl-md bg-kumo-base text-kumo-default leading-relaxed">
+            <Streamdown
+              className="sd-theme rounded-2xl rounded-bl-md p-3"
+              plugins={{ code }}
+              controls={false}
+            >
+              {finalReply}
+            </Streamdown>
+          </div>
+        </div>
+        {debug && (
+          <div className="flex justify-start">
+            <Surface className="max-w-[85%] px-4 py-2.5 rounded-xl ring ring-kumo-line">
+              <div className="flex items-center gap-2 mb-1">
+                <Icon size={14} className="text-kumo-success" weight="fill" />
+                <Text size="xs" variant="secondary" bold>
+                  {meta?.label ?? toolName}
+                </Text>
+                <Badge variant="secondary">Done</Badge>
+              </div>
+              {meta && (
+                <p className="text-xs text-kumo-subtle mb-1.5">{meta.detail}</p>
+              )}
+              <ToolIO label="Input" value={part.input} />
+              <ToolIO label="Output" value={part.output} />
+            </Surface>
+          </div>
+        )}
+      </div>
+    );
+  }
+
   // Completed
   if (part.state === "output-available") {
+    const Icon = meta?.icon ?? GearIcon;
+    if (!debug) {
+      return (
+        <div className="flex items-center gap-1.5 text-kumo-subtle px-1">
+          <Icon size={12} className="text-kumo-success" weight="fill" />
+          <span className="text-xs">{meta?.doneText ?? "Done"}</span>
+        </div>
+      );
+    }
     return (
       <div className="flex justify-start">
         <Surface className="max-w-[85%] px-4 py-2.5 rounded-xl ring ring-kumo-line">
           <div className="flex items-center gap-2 mb-1">
-            <GearIcon size={14} className="text-kumo-inactive" />
+            <Icon size={14} className="text-kumo-success" weight="fill" />
             <Text size="xs" variant="secondary" bold>
-              {toolName}
+              {meta?.label ?? toolName}
             </Text>
             <Badge variant="secondary">Done</Badge>
           </div>
+          {meta && (
+            <p className="text-xs text-kumo-subtle mb-1.5">{meta.detail}</p>
+          )}
           <ToolIO label="Input" value={part.input} />
           <ToolIO label="Output" value={part.output} />
         </Surface>
+      </div>
+    );
+  }
+
+  // Approved/rejected, but the SDK hasn't finished resolving the call
+  // (running execute() and producing output) yet — a brief transient
+  // state. Show a spinner rather than nothing.
+  if (part.state === "approval-responded") {
+    return (
+      <div className="flex items-center gap-1.5 text-kumo-subtle px-1">
+        <GearIcon size={12} className="text-kumo-brand animate-spin" />
+        <span className="text-xs">
+          {(part.approval as { approved?: boolean })?.approved
+            ? "Sending…"
+            : "Working on it…"}
+        </span>
       </div>
     );
   }
@@ -443,14 +768,16 @@ function ToolPartView({
           <div className="flex items-center gap-2 mb-2">
             <GearIcon size={14} className="text-kumo-warning" />
             <Text size="sm" bold>
-              Approval needed: {toolName}
+              Approval needed: {meta?.label ?? toolName}
             </Text>
           </div>
-          <div className="font-mono mb-3">
-            <Text size="xs" variant="secondary">
-              {JSON.stringify(part.input, null, 2)}
-            </Text>
-          </div>
+          {debug && (
+            <div className="font-mono mb-3">
+              <Text size="xs" variant="secondary">
+                {JSON.stringify(part.input, null, 2)}
+              </Text>
+            </div>
+          )}
           <div className="flex gap-2">
             <Button
               variant="primary"
@@ -486,13 +813,21 @@ function ToolPartView({
     ("approval" in part &&
       (part.approval as { approved?: boolean })?.approved === false)
   ) {
+    if (!debug) {
+      return (
+        <div className="flex items-center gap-1.5 text-kumo-subtle px-1">
+          <XCircleIcon size={12} className="text-kumo-inactive" />
+          <span className="text-xs">Draft wasn't approved</span>
+        </div>
+      );
+    }
     return (
       <div className="flex justify-start">
         <Surface className="max-w-[85%] px-4 py-2.5 rounded-xl ring ring-kumo-line">
           <div className="flex items-center gap-2">
             <XCircleIcon size={14} className="text-kumo-danger" />
             <Text size="xs" variant="secondary" bold>
-              {toolName}
+              {meta?.label ?? toolName}
             </Text>
             <Badge variant="secondary">Rejected</Badge>
           </div>
@@ -504,13 +839,21 @@ function ToolPartView({
   // Errored
   if (part.state === "output-error") {
     const errorText = part.errorText;
+    if (!debug) {
+      return (
+        <div className="flex items-center gap-1.5 text-kumo-subtle px-1">
+          <XCircleIcon size={12} className="text-kumo-danger" />
+          <span className="text-xs">Hit a snag with that step</span>
+        </div>
+      );
+    }
     return (
       <div className="flex justify-start">
         <Surface className="max-w-[85%] px-4 py-2.5 rounded-xl ring-2 ring-kumo-danger">
           <div className="flex items-center gap-2 mb-1">
             <XCircleIcon size={14} className="text-kumo-danger" />
             <Text size="xs" variant="secondary" bold>
-              {toolName}
+              {meta?.label ?? toolName}
             </Text>
             <Badge variant="destructive">Error</Badge>
           </div>
@@ -526,13 +869,23 @@ function ToolPartView({
 
   // Executing
   if (part.state === "input-available" || part.state === "input-streaming") {
+    if (!debug) {
+      return (
+        <div className="flex items-center gap-1.5 text-kumo-subtle px-1">
+          <GearIcon size={12} className="text-kumo-brand animate-spin" />
+          <span className="text-xs">
+            {meta?.activeText ?? "Working on it…"}
+          </span>
+        </div>
+      );
+    }
     return (
       <div className="flex justify-start">
         <Surface className="max-w-[85%] px-4 py-2.5 rounded-xl ring ring-kumo-line">
           <div className="flex items-center gap-2">
-            <GearIcon size={14} className="text-kumo-inactive animate-spin" />
+            <GearIcon size={14} className="text-kumo-brand animate-spin" />
             <Text size="xs" variant="secondary">
-              Running {toolName}...
+              {meta?.label ?? `Running ${toolName}...`}
             </Text>
           </div>
           <ToolIO label="Input" value={part.input} />
@@ -612,11 +965,18 @@ function Chat({
     status
   } = useAgentChat({
     agent,
-    experimental_throttle: 100
+    experimental_throttle: 100,
+    onError: (error: Error) => {
+      toasts.add({
+        title: "The agent couldn't respond",
+        description: error.message,
+        timeout: 0
+      });
+    }
   });
 
   const finalizeReplyWithEdit = useCallback(
-    (ticketId: string, editedReply: string) =>
+    (ticketId: string | undefined, editedReply: string) =>
       agent.stub.finalizeReplyWithEdit(ticketId, editedReply),
     [agent]
   );
@@ -750,6 +1110,14 @@ function Chat({
           </div>
         </div>
 
+        <div className="max-w-3xl mx-auto mt-2.5 flex items-center justify-between gap-3 flex-wrap">
+          <p className="text-sm text-kumo-subtle">
+            Describe an issue and I'll look into it, then draft a reply for you
+            to approve.
+          </p>
+          {showDebug && <RequirementsStrip />}
+        </div>
+
         <div className="max-w-3xl mx-auto mt-2 flex items-center gap-2">
           <UserSwitchIcon size={14} className="text-kumo-inactive" />
           {editingCustomer ? (
@@ -765,7 +1133,7 @@ function Chat({
               <input
                 value={customerDraft}
                 onChange={(e) => setCustomerDraft(e.target.value)}
-                className="px-2 py-1 text-xs font-mono rounded border border-kumo-line bg-kumo-base text-kumo-default focus:outline-none focus:ring-1 focus:ring-kumo-accent"
+                className="px-2 py-1 text-xs font-mono rounded border border-kumo-line bg-kumo-base text-kumo-default focus:outline-none focus:ring-1 focus:ring-kumo-brand"
               />
               <Button type="submit" variant="primary" size="sm">
                 Switch
@@ -797,6 +1165,8 @@ function Chat({
           )}
         </div>
       </header>
+
+      {showDebug && <PipelineStepper messages={messages} />}
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto">
@@ -832,6 +1202,24 @@ function Chat({
             const isUser = message.role === "user";
             const isLastAssistant =
               message.role === "assistant" && index === messages.length - 1;
+            // Sibling assistant text is hidden while a proposeReply is
+            // pending (the model's narration can contradict the draft; the
+            // approval card is the source of truth) and once it's approved
+            // (the reply bubble IS the assistant's message now — a trailing
+            // "that's on its way" would read as talking past the customer).
+            // It's kept only for a rejection, where the acknowledgment is
+            // the useful cue that a redraft is possible.
+            const suppressAssistantText = message.parts.some((p) => {
+              if (!isToolUIPart(p) || getToolName(p) !== "proposeReply")
+                return false;
+              return (
+                p.state === "input-streaming" ||
+                p.state === "input-available" ||
+                p.state === "approval-requested" ||
+                p.state === "approval-responded" ||
+                p.state === "output-available"
+              );
+            });
 
             return (
               <div key={message.id} className="space-y-2">
@@ -849,6 +1237,7 @@ function Chat({
                       <ToolPartView
                         key={key}
                         part={part}
+                        debug={showDebug}
                         addToolApprovalResponse={addToolApprovalResponse}
                         addToolOutput={addToolOutput}
                         finalizeReplyWithEdit={finalizeReplyWithEdit}
@@ -891,6 +1280,7 @@ function Chat({
 
                   if (part.type === "text") {
                     if (!part.text) return null;
+                    if (!isUser && suppressAssistantText) return null;
 
                     if (isUser) {
                       return (
@@ -937,7 +1327,7 @@ function Chat({
           }}
           className="max-w-3xl mx-auto px-5 py-4"
         >
-          <div className="flex items-end gap-3 rounded-xl border border-kumo-line bg-kumo-base p-3 shadow-sm focus-within:ring-2 focus-within:ring-kumo-ring focus-within:border-transparent transition-shadow">
+          <div className="flex items-end gap-3 rounded-xl border border-kumo-line bg-kumo-base p-3 shadow-sm focus-within:ring-2 focus-within:ring-kumo-brand focus-within:border-transparent transition-shadow">
             <Button
               type="button"
               variant={isRecording ? "primary" : "ghost"}
