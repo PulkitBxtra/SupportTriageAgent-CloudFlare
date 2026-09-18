@@ -6,8 +6,6 @@ which classifies it, checks the customer's ticket history, searches a
 knowledge base, and drafts a reply — but the draft is never sent without a
 human approving, editing, or rejecting it first.
 
-Prompt history for this project is logged in [`PROMPTS.md`](./PROMPTS.md).
-
 ## How it maps to the assignment
 
 | Requirement             | Implementation                                                                                                                                                                                                                        |
@@ -72,8 +70,8 @@ npx wrangler login
 npx wrangler d1 create support-triage-agent-db
 ```
 
-Copy the `database_id` from the output into `wrangler.jsonc` — replace
-`REPLACE_WITH_YOUR_D1_DATABASE_ID` under `d1_databases`.
+Copy the `database_id` from the output into `wrangler.jsonc`, replacing the
+one under `d1_databases`.
 
 Then apply the schema:
 
@@ -165,4 +163,4 @@ Then re-run step 7 against the deployed URL (`https://<your-worker>.<your-subdom
   trusts: it can echo the wrong `ticketId` back into `proposeReply` (so the
   ticket is resolved server-side from the customer's own tickets), and its
   free-text closing acknowledgment after an approval was unreliable (so it
-  is deterministic). See `PROMPTS.md` entries 11–16 for the full history.
+  is deterministic).
