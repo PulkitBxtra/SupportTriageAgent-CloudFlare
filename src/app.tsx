@@ -1024,11 +1024,22 @@ function Chat({
             headers: { "Content-Type": blob.type },
             body: blob
           });
-          if (!res.ok) throw new Error(`Transcription failed (${res.status})`);
-          const data = (await res.json()) as { text: string };
-          setInput((prev) =>
-            prev ? `${prev} ${data.text}`.trim() : data.text
-          );
+          const data = (await res.json().catch(() => ({}))) as {
+            text?: string;
+            error?: string;
+          };
+          if (!res.ok || typeof data.text !== "string") {
+            throw new Error(
+              data.error ?? `Transcription failed (${res.status})`
+            );
+          }
+          const text = data.text.trim();
+          if (!text) {
+            throw new Error(
+              "Didn't catch any speech — try again a little closer to the mic."
+            );
+          }
+          setInput((prev) => (prev ? `${prev} ${text}`.trim() : text));
         } catch (e) {
           toasts.add({
             title: "Voice transcription failed",

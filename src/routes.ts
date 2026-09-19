@@ -78,11 +78,21 @@ export async function transcribeVoice(
 
   const base64Audio = arrayBufferToBase64(audioBuffer);
 
-  const result = (await env.AI.run(WHISPER_MODEL, {
-    audio: base64Audio
-  })) as { text: string };
-
-  return Response.json({ text: result.text ?? "" });
+  try {
+    const result = (await env.AI.run(WHISPER_MODEL, {
+      audio: base64Audio
+    })) as { text: string };
+    return Response.json({ text: result.text ?? "" });
+  } catch (error) {
+    // e.g. the Workers AI free-tier daily quota — give the UI the reason
+    // rather than an opaque 500.
+    return Response.json(
+      {
+        error: error instanceof Error ? error.message : "Transcription failed"
+      },
+      { status: 502 }
+    );
+  }
 }
 
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
