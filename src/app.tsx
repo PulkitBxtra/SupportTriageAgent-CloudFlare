@@ -340,25 +340,33 @@ const STATUS_BADGE: Record<string, "secondary" | "primary" | "destructive"> = {
   escalated: "destructive"
 };
 
+async function fetchTickets(): Promise<Ticket[]> {
+  const res = await fetch("/api/admin/tickets");
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  const data = (await res.json()) as { tickets: Ticket[] };
+  return data.tickets;
+}
+
 function AdminPanel({ onClose }: { onClose: () => void }) {
   const [tickets, setTickets] = useState<Ticket[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    setError(null);
-    try {
-      const res = await fetch("/api/admin/tickets");
-      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-      const data = (await res.json()) as { tickets: Ticket[] };
-      setTickets(data.tickets);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load tickets");
-    }
-  }, []);
+  const load = useCallback(
+    () =>
+      fetchTickets().then(setTickets, (e: unknown) => {
+        setError(e instanceof Error ? e.message : "Failed to load tickets");
+      }),
+    []
+  );
 
   useEffect(() => {
     load();
   }, [load]);
+
+  const refresh = () => {
+    setError(null);
+    load();
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 backdrop-blur-sm p-4 overflow-y-auto">
@@ -372,7 +380,7 @@ function AdminPanel({ onClose }: { onClose: () => void }) {
             {tickets && <Badge variant="secondary">{tickets.length}</Badge>}
           </div>
           <div className="flex items-center gap-2">
-            <Button variant="secondary" size="sm" onClick={load}>
+            <Button variant="secondary" size="sm" onClick={refresh}>
               Refresh
             </Button>
             <Button
